@@ -1,5 +1,10 @@
+# Get CLI args:
+Param(
+    [parameter(Mandatory = $true)] $ManagementIP
+)
+
 # Get toolchain ready and build k3s for Windows
-choco install -y golang minigw git kubernetes-cli
+#choco install -y golang minigw git kubernetes-cli
 go build -i  -o k3s.exe main.go
 
 # Prepare node
@@ -11,33 +16,35 @@ cp kube* C:\k\
 
 # Get Flannel ready (including script below)
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-
-################################################################################################################
 # wget https://raw.githubusercontent.com/Microsoft/SDN/master/Kubernetes/flannel/start.ps1 -o c:\k\start.ps1
-Param(
-    [parameter(Mandatory = $true)] $ManagementIP,
-    [ValidateSet("l2bridge", "overlay",IgnoreCase = $true)] [parameter(Mandatory = $false)] $NetworkMode="l2bridge",
-    [parameter(Mandatory = $false)] $ClusterCIDR="10.244.0.0/16",
-    [parameter(Mandatory = $false)] $KubeDnsServiceIP="10.96.0.10",
-    [parameter(Mandatory = $false)] $ServiceCIDR="10.96.0.0/12",
-    [parameter(Mandatory = $false)] $InterfaceName="Ethernet",
-    [parameter(Mandatory = $false)] $LogDir = "C:\k",
-    [parameter(Mandatory = $false)] $KubeletFeatureGates = ""
-)
 
+# Run components
+./k3s server --no-deploy servicelb coredns traefik --disable-agent
+cp C:\Users\Administrator\.kube\k3s.yaml C:\k\config
+
+# Start server
+.\k3s.exe server --no-deploy traefik servicelb coredns --disable-agent
+
+# Setup flannel
+# .\start.ps1 -ManagementIP [REDACTED] -ClusterCIDR 10.42.0.0/16 -ServiceCIDR 10.43.0.0/16 -KubeDnsServiceIP 10.43.0.10  -NetworkMode "overlay"
+################################################################################################################
+# $KubeDnsServiceIP="10.96.0.10"
+$KubeDnsServiceIP = 10.43.0.10 
+# $ServiceCIDR="10.96.0.0/12"
+$ServiceCIDR = 10.43.0.0/16
+# $ClusterCIDR="10.244.0.0/16"
+$ClusterCIDR = 10.42.0.0/16
 $BaseDir = "c:\k"
-$NetworkMode = $NetworkMode.ToLower()
-$NetworkName = "cbr0"
+$NetworkMode = "overlay"
+$NetworkName = "vxlan0"
+$LogDir = "C:\k"
+$KubeletFeatureGates = ""
+$InterfaceName="Ethernet"
 
 $GithubSDNRepository = 'Microsoft/SDN'
 if ((Test-Path env:GITHUB_SDN_REPOSITORY) -and ($env:GITHUB_SDN_REPOSITORY -ne ''))
 {
     $GithubSDNRepository = $env:GITHUB_SDN_REPOSITORY
-}
-
-if ($NetworkMode -eq "overlay")
-{
-    $NetworkName = "vxlan0"
 }
 
 # Use helpers to setup binaries, conf files etc.
@@ -62,25 +69,15 @@ powershell $BaseDir\start-kubelet.ps1 -RegisterOnly -NetworkMode $NetworkMode
 ipmo C:\k\hns.psm1
 ################################################################################################################
 
-# Run components
-./k3s server --no-deploy servicelb coredns traefik --disable-agent
-cp C:\Users\Administrator\.kube\k3s.yaml C:\k\config
-
-# Start server
-.\k3s.exe server --no-deploy traefik servicelb coredns --disable-agent
-
-# Setup flannel
-.\start.ps1 -ManagementIP 172.31.29.6 -ClusterCIDR 10.42.0.0/16 -ServiceCIDR 10.43.0.0/16 -KubeDnsServiceIP 10.43.0.10  -NetworkMode "overlay"
-
 # Start flannel
 [Environment]::SetEnvironmentVariable("NODE_NAME", (hostname).ToLower())
-C:\flannel\flanneld.exe -kubeconfig-file "C:\k\config" -iface <mgmt ip> -ip-masq  -kube-subnet-mgr
+C:\flannel\flanneld.exe -kubeconfig-file "C:\k\config" -iface "$ManagementIP" -ip-masq  -kube-subnet-mgr
 
 # Start Kubelet
 ipmo C:\k\helper.psm1
-GetSourceVip -ipaddress "$mgmt-ip" -NetworkName "vxlan0"
+GetSourceVip -ipaddress "$ManagementIP" -NetworkName "vxlan0"
 cat .\sourceVip.json 
-C:\k\start-kubelet.ps1 -NetworkMode "overlay" -KubeDNSServiceIP "10.43.0.10" -LogDir "C:\k"
+C:\k\start-kubelet.ps1 -NetworkMode "overlay" -KubeDNSServiceIP "$KubeDnsServiceIP" -LogDir "C:\k"
 
 # Start kubeproxy
-.\start-Kubeproxy.ps1 -NetworkMode "overlay" -clusterCIDR "10.42.0.0/16" -NetworkName "vxlan0" -LogDir "C:\k"
+.\start-Kubeproxy.ps1 -NetworkMode "overlay" -clusterCIDR "$ClusterCIDR" -NetworkName "vxlan0" -LogDir "C:\k"
